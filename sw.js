@@ -1,5 +1,5 @@
 /* Habit Grid offline shell. Caches the app's own files only, never your data. */
-var VERSION = 'habit-grid-v2';
+var VERSION = 'habit-grid-v3';
 var SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'core.js', 'demo-backend.js', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/apple-touch-icon.png'];
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(VERSION).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); }));

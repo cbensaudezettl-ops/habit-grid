@@ -14,8 +14,9 @@
     APP_NAME: 'Habit Grid',
     LOCK_DAYS: 30,
     EDIT_WINDOW_DAYS: 2,       // today and the 2 previous days can be logged
-    GOOD_COUNT: 5,
-    BAD_COUNT: 5,
+    MAX_GOOD: 5,               // up to 5 good habits to gain
+    MAX_BAD: 5,                // up to 5 bad habits to lose
+    MIN_HABITS: 1,             // at least one habit in total
     GREEN_THRESHOLD: 2 / 3,    // strictly more than 2/3 of habits kept = green day
     QUIZ_QUESTIONS: 5,
     GIFTS_PER_DAY: 10,
@@ -112,6 +113,10 @@
   const KINDS = ['good', 'bad'];
   const PERIODS = ['day', 'week', 'month'];
   const FREQ_MAX = { good: { day: 20, week: 7, month: 31 }, bad: { day: 20, week: 6, month: 30 } };
+  const KIND_INFO = {
+    good: { emoji: '🌱', short: 'To gain', title: 'Good habits to gain', one: 'Good habit to gain', verb: 'gained' },
+    bad: { emoji: '🍂', short: 'To lose', title: 'Bad habits to lose', one: 'Bad habit to lose', verb: 'resisted' }
+  };
   const LEVEL_LABELS = { good: ['Not done', 'Partly', 'Done'], bad: ['Slipped', 'Partly', 'Resisted'] };
   const FORM_CHOICES = ['✅ Respected', '🌗 Partly', '❌ Not respected']; // levels 2, 1, 0
   const FORM_DAYS = ['Today', 'Yesterday', 'The day before yesterday'];  // offsets 0, 1, 2
@@ -167,7 +172,7 @@
       return { ok: ok, errors: errors, value: ok ? new Habit({ kind: kind, sentence: sentence, metric: metric, frequency: frequency }) : null };
     }
 
-    /** Exactly 5 good and 5 bad, all valid, no duplicates. */
+    /** 0 to 5 good and 0 to 5 bad (at least 1 in total), all valid, no duplicates. */
     static validateSet(list) {
       if (!Array.isArray(list)) return { ok: false, error: 'Habits are missing.' };
       const good = [], bad = [], seen = {};
@@ -180,7 +185,9 @@
         r.value.id = list[i].id || null;
         (r.value.kind === 'good' ? good : bad).push(r.value);
       }
-      if (good.length !== CONFIG.GOOD_COUNT || bad.length !== CONFIG.BAD_COUNT) return { ok: false, error: 'You need exactly 5 good and 5 bad habits.' };
+      if (good.length > CONFIG.MAX_GOOD) return { ok: false, error: 'At most ' + CONFIG.MAX_GOOD + ' good habits.' };
+      if (bad.length > CONFIG.MAX_BAD) return { ok: false, error: 'At most ' + CONFIG.MAX_BAD + ' bad habits.' };
+      if (good.length + bad.length < CONFIG.MIN_HABITS) return { ok: false, error: 'Choose at least one habit.' };
       return { ok: true, value: good.concat(bad) };
     }
   }
@@ -200,6 +207,13 @@
       this.checkins = checkins || {};
       this.joinedAt = joinedAt || null;
       this.memo = {};
+    }
+    /** Kept and total, separately for good habits (gained) and bad habits (resisted). */
+    static split(habits, details) {
+      const out = { good: { kept: 0, total: 0 }, bad: { kept: 0, total: 0 } };
+      habits.forEach(function (h) { out[h.kind].total++; });
+      (details || []).forEach(function (d) { out[d.habit.kind].kept += d.score; });
+      return out;
     }
     activeHabits(date) { return this.habits.filter(function (h) { return h.activeOn(date); }); }
     level(date, habitId) {
@@ -235,13 +249,13 @@
       if (today && date > today) res = { date: date, status: 'future' };
       else if (this.joinedAt && date < this.joinedAt) res = { date: date, status: 'none' };
       else if (!habits.length) res = { date: date, status: 'none' };
-      else if (!this.checkins[date]) res = { date: date, status: 'gray', kept: 0, total: habits.length, ratio: null };
+      else if (!this.checkins[date]) res = { date: date, status: 'gray', kept: 0, total: habits.length, ratio: null, byKind: DayEvaluator.split(habits, null) };
       else {
         const self = this;
         const details = habits.map(function (h) { return self.habitDetail(h, date); });
         const kept = details.reduce(function (s, d) { return s + d.score; }, 0);
         const ratio = kept / habits.length;
-        res = { date: date, status: ratio > CONFIG.GREEN_THRESHOLD + 1e-9 ? 'green' : 'red', kept: kept, total: habits.length, ratio: ratio, details: details };
+        res = { date: date, status: ratio > CONFIG.GREEN_THRESHOLD + 1e-9 ? 'green' : 'red', kept: kept, total: habits.length, ratio: ratio, details: details, byKind: DayEvaluator.split(habits, details) };
       }
       this.memo[date] = res;
       return res;
@@ -322,7 +336,7 @@
     'Each green square is proof that change is not a someday thing.',
     'Today is a chance to surprise your future self.',
     'The person you want to be is a few hundred small decisions away.',
-    'Ten habits, one day at a time: that is how a new life gets built.',
+    'A few habits, one day at a time: that is how a new life gets built.',
     'Think of where a month of this rhythm could take you. Then start with today.',
     'Growth is quiet at first. Then one day everyone notices.',
     'Your streak is a story. Write the next line today.',
@@ -378,360 +392,306 @@
   };
 
   // ------------------------------------------------------------------ math quiz ("Stay awake")
+  /*
+   * Three friendly levels. Every day the generator draws 5 of the templates of
+   * each level at random and gives them new random numbers, from a seed made of
+   * the date: the quiz changes every day, and all players get the same one.
+   */
   const QUIZ_LEVELS = [
-    { id: 1, name: 'Algebra warm-up', topic: 'Basic algebra', emoji: '🌱' },
-    { id: 2, name: 'Vector flow', topic: 'Vectors in action', emoji: '🧭' },
-    { id: 3, name: 'Theorem quest', topic: 'Apply a theorem', emoji: '🏛️' }
+    { id: 1, name: 'Quick maths', topic: 'Mental arithmetic', emoji: '🌱' },
+    { id: 2, name: 'Everyday algebra', topic: 'Equations, percentages, proportions', emoji: '🧭' },
+    { id: 3, name: 'Shapes & logic', topic: 'Areas, angles, units, patterns', emoji: '🧩' }
   ];
-  const SUP = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '-': '⁻' };
   function n(x) { return x < 0 ? '−' + Math.abs(x) : String(x); }
-  function p(x) { return x < 0 ? '(' + n(x) + ')' : String(x); }
-  function sup(x) { return String(x).split('').map(function (c) { return SUP[c] || c; }).join(''); }
-  function vec(x, y) { return '(' + (typeof x === 'number' ? n(x) : x) + ', ' + (typeof y === 'number' ? n(y) : y) + ')'; }
   function dec(x) { return String(Number(x.toFixed(4))); }
   function gcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) { const t = a % b; a = b; b = t; } return a; }
-  function lcm(a, b) { return a / gcd(a, b) * b; }
-  function powmod(a, e, m) { let r = 1; a %= m; while (e > 0) { if (e & 1) r = (r * a) % m; a = (a * a) % m; e >>= 1; } return r; }
-  function poly2(b, c) {
-    let s = 'x²';
-    if (b) s += ' ' + (b < 0 ? '−' : '+') + ' ' + (Math.abs(b) === 1 ? '' : Math.abs(b)) + 'x';
-    if (c) s += ' ' + (c < 0 ? '−' : '+') + ' ' + Math.abs(c);
-    return s;
-  }
-  function rootStr(x) { const r = Math.round(Math.sqrt(x)); return r * r === x ? String(r) : '√' + x; }
+  function euro(cents) { return (cents / 100).toFixed(2) + ' €'; }
+  function clock(min) { min = ((min % 1440) + 1440) % 1440; return DateUtilPad(Math.floor(min / 60)) + ':' + DateUtilPad(min % 60); }
+  function DateUtilPad(v) { return (v < 10 ? '0' : '') + v; }
+  function frac(a, b) { const g = gcd(a, b) || 1; a /= g; b /= g; return b === 1 ? String(a) : a + '/' + b; }
+  function unit(u) { return function (v) { return n(v) + ' ' + u; }; }
 
-  /** Numeric answer + plausible wrong answers (common mistakes) + filler near the answer. */
-  function numQ(correct, cands, fmt, positive) {
-    fmt = fmt || n;
+  /**
+   * Numeric answer + plausible wrong answers (common mistakes) + filler near the answer.
+   * step: distance between filler answers (for example 10 cents or 5 minutes).
+   */
+  function numQ(correct, cands, fmt, positive, step) {
+    fmt = fmt || n; step = step || 1;
     const ok = function (v) { return typeof v === 'number' && isFinite(v) && Number.isInteger(v) && v !== correct && (!positive || v > 0); };
     return {
       answer: fmt(correct),
       wrong: cands.filter(ok).map(fmt),
       fill: function (rng, i) {
-        const k = Math.ceil(i / 2);
+        const k = Math.ceil(i / 2) * step;
         let v = correct + (i % 2 ? k : -k);
-        if (positive && v <= 0) v = correct + k + 1;
+        if (positive && v <= 0) v = correct + k + step;
         return fmt(v);
       }
     };
   }
   function q() { return Object.assign.apply(null, arguments); }
 
-  const ANGLE_CASES = [
-    { u: [1, 1], v: [1, -1], deg: 90, cos: '0' }, { u: [2, 0], v: [3, 3], deg: 45, cos: '√2/2' },
-    { u: [1, 0], v: [-2, 2], deg: 135, cos: '−√2/2' }, { u: [3, 4], v: [-4, 3], deg: 90, cos: '0' },
-    { u: [1, 2], v: [2, 4], deg: 0, cos: '1' }, { u: [1, 2], v: [-1, -2], deg: 180, cos: '−1' },
-    { u: [0, 2], v: [3, 3], deg: 45, cos: '√2/2' }, { u: [2, 2], v: [-3, 0], deg: 135, cos: '−√2/2' }
-  ];
-
   const TEMPLATES = {
+    // ---------------------------------------------------------------- level 1: quick maths
     1: [
-      { id: 'linear', make: function (r) {
-        const a = r.int(2, 9), x = r.nonZero(-9, 9), b = r.nonZero(-15, 15), c = a * x + b;
-        return q(numQ(x, [(c + b) / a, c - b, -x, x + 1], function (v) { return 'x = ' + n(v); }), {
-          prompt: 'Solve ' + a + 'x ' + (b < 0 ? '−' : '+') + ' ' + Math.abs(b) + ' = ' + n(c),
-          skill: 'Undo operations in reverse order: move the constant first, then divide by the coefficient.',
-          explanation: a + 'x = ' + n(c) + ' ' + (b < 0 ? '+' : '−') + ' ' + Math.abs(b) + ' = ' + n(c - b) + ', so x = ' + n(c - b) + ' ÷ ' + a + ' = ' + n(x) + '.'
+      { id: 'add', make: function (r) {
+        const a = r.int(23, 89), b = r.int(14, 79), s = a + b, tb = b - b % 10;
+        return q(numQ(s, [s + 10, s - 10, s - 1], String, true), {
+          prompt: 'What is ' + a + ' + ' + b + '?',
+          skill: 'Mental addition: add the tens first, then the units.',
+          explanation: a + ' + ' + b + ' = ' + a + ' + ' + tb + ' + ' + (b % 10) + ' = ' + (a + tb) + ' + ' + (b % 10) + ' = ' + s + '.'
         });
       } },
-      { id: 'expand', make: function (r) {
-        const a = r.int(2, 9), s = r.sign(), sg = s > 0 ? '+' : '−', op = s > 0 ? '−' : '+';
-        return {
-          prompt: 'Expand (x ' + sg + ' ' + a + ')²',
-          answer: 'x² ' + sg + ' ' + (2 * a) + 'x + ' + (a * a),
-          wrong: ['x² + ' + (a * a), 'x² ' + sg + ' ' + a + 'x + ' + (a * a), 'x² ' + op + ' ' + (2 * a) + 'x + ' + (a * a), 'x² ' + sg + ' ' + (2 * a) + 'x + ' + (2 * a)],
-          fill: function (rng, i) { return 'x² ' + sg + ' ' + (2 * a + i) + 'x + ' + (a * a); },
-          skill: '(a ± b)² = a² ± 2ab + b²: the double product 2ab is the term people forget.',
-          explanation: '(x ' + sg + ' ' + a + ')² = x² ' + sg + ' 2·' + a + '·x + ' + a + '² = x² ' + sg + ' ' + (2 * a) + 'x + ' + (a * a) + '.'
-        };
-      } },
-      { id: 'squares', make: function (r) {
-        const k = r.int(1, 9), base = r.pick([20, 30, 40, 50, 60, 70, 100]), A = base + k, B = base - k, ans = 4 * k * base;
-        return q(numQ(ans, [2 * k * base, 4 * k * k, ans + 2 * k], null, true), {
-          prompt: 'Compute ' + A + '² − ' + B + '² in your head.',
-          skill: 'a² − b² = (a − b)(a + b) turns two big squares into one easy product.',
-          explanation: A + '² − ' + B + '² = (' + A + ' − ' + B + ')(' + A + ' + ' + B + ') = ' + (2 * k) + ' × ' + (2 * base) + ' = ' + ans + '.'
+      { id: 'sub', make: function (r) {
+        const a = r.int(52, 98), b = r.int(17, a - 11), d = a - b, tb = b - b % 10;
+        return q(numQ(d, [d + 10, d - 10, d + 2], String, true), {
+          prompt: 'What is ' + a + ' − ' + b + '?',
+          skill: 'Mental subtraction: take away the tens first, then the units.',
+          explanation: a + ' − ' + tb + ' = ' + (a - tb) + ', then ' + (a - tb) + ' − ' + (b % 10) + ' = ' + d + '.'
         });
       } },
-      { id: 'vieta', make: function (r) {
-        const r1 = r.nonZero(-6, 8); let r2; do { r2 = r.nonZero(-6, 8); } while (r2 === r1);
-        const S = r1 + r2, P = r1 * r2, b = -S, c = P, askSum = r.next() < 0.5;
-        return q(askSum ? numQ(S, [-S, P, S + 1]) : numQ(P, [-P, S, P - 1]), {
-          prompt: 'The equation ' + poly2(b, c) + ' = 0 has two roots. What is their ' + (askSum ? 'sum' : 'product') + '?',
-          skill: 'Vieta: for x² + bx + c = 0, the roots add up to −b and multiply to c. No need to solve.',
-          explanation: 'Here b = ' + n(b) + ' and c = ' + n(c) + ': sum = −b = ' + n(S) + ', product = c = ' + n(P) + ' (the roots are ' + n(r1) + ' and ' + n(r2) + ').'
+      { id: 'times', make: function (r) {
+        const a = r.int(3, 9), b = r.int(4, 12), p = a * b;
+        return q(numQ(p, [a * (b + 1), a * (b - 1), (a + 1) * b, a + b], String, true), {
+          prompt: 'What is ' + a + ' × ' + b + '?',
+          skill: 'Times tables. If you do not know one by heart, split it: 7 × 12 = 7 × 10 + 7 × 2.',
+          explanation: b > 10 ? a + ' × ' + b + ' = ' + a + ' × 10 + ' + a + ' × ' + (b - 10) + ' = ' + (a * 10) + ' + ' + (a * (b - 10)) + ' = ' + p + '.'
+            : a + ' × ' + b + ' = ' + a + ' × ' + (b - 1) + ' + ' + a + ' = ' + (a * (b - 1)) + ' + ' + a + ' = ' + p + '.'
         });
       } },
-      { id: 'system', make: function (r) {
-        const x = r.int(-8, 9), y = r.int(-8, 9), s = x + y, d = x - y;
-        return q(numQ(x, [y, s + d, s - d, -x]), {
-          prompt: 'x + y = ' + n(s) + ' and x − y = ' + n(d) + '. What is x?',
-          skill: 'Add the two equations: y cancels and you get 2x in one move.',
-          explanation: 'Adding: 2x = ' + n(s) + ' + ' + p(d) + ' = ' + n(s + d) + ', so x = ' + n(x) + '.'
+      { id: 'divide', make: function (r) {
+        const a = r.int(3, 9), v = r.int(4, 12), N = a * v;
+        return q(numQ(v, [v + 1, v - 1, v + 2, a], String, true), {
+          prompt: 'What is ' + N + ' ÷ ' + a + '?',
+          skill: 'Division is the reverse of multiplication: look for the number that, times ' + a + ', gives ' + N + '.',
+          explanation: a + ' × ' + v + ' = ' + N + ', so ' + N + ' ÷ ' + a + ' = ' + v + '.'
+        });
+      } },
+      { id: 'priority', make: function (r) {
+        const a = r.int(2, 9), b = r.int(2, 6), c = r.int(2, 9), v = a + b * c;
+        return q(numQ(v, [(a + b) * c, a * b + c, v + 1], String, true), {
+          prompt: 'What is ' + a + ' + ' + b + ' × ' + c + '?',
+          skill: 'Order of operations: multiply before you add.',
+          explanation: 'First ' + b + ' × ' + c + ' = ' + (b * c) + ', then ' + a + ' + ' + (b * c) + ' = ' + v + '. Not (' + a + ' + ' + b + ') × ' + c + ' = ' + ((a + b) * c) + '.'
         });
       } },
       { id: 'percent', make: function (r) {
-        const pc = r.pick([10, 20, 25, 30, 40, 50]), loss = pc * pc / 100;
-        const f = function (v) { return (v > 0 ? '+' : v < 0 ? '−' : '') + dec(Math.abs(v)) + '%'; };
-        return {
-          prompt: 'A price rises by ' + pc + '% and then falls by ' + pc + '%. What is the overall change?',
-          answer: f(-loss), wrong: ['0%', f(loss), f(-2 * loss)],
-          fill: function (rng, i) { return f(-(loss + i)); },
-          skill: 'Successive percentages multiply: (1 + p)(1 − p) = 1 − p², so you never get back to the start.',
-          explanation: '× ' + dec(1 + pc / 100) + ' then × ' + dec(1 - pc / 100) + ' gives × ' + dec(1 - loss / 100) + ': the price ends ' + dec(loss) + '% lower.'
-        };
-      } },
-      { id: 'powers', make: function (r) {
-        const a = r.int(2, 7), b = r.int(1, 4), byEight = r.next() < 0.5, k = byEight ? 3 : 2, e = a + 2 * b - k;
-        return q(numQ(e, [a + b - k, a + 2 * b + k, 2 * a * b - k], function (v) { return '2' + sup(v); }, true), {
-          prompt: 'Write 2' + sup(a) + ' × 4' + sup(b) + ' ÷ ' + (byEight ? 8 : 4) + ' as a power of 2.',
-          skill: 'Rewrite every factor in the same base, then add or subtract the exponents.',
-          explanation: '4' + sup(b) + ' = 2' + sup(2 * b) + ' and ' + (byEight ? 8 : 4) + ' = 2' + sup(k) + ', so the exponent is ' + a + ' + ' + (2 * b) + ' − ' + k + ' = ' + e + '.'
+        const pc = r.pick([10, 20, 25, 50, 75]), N = r.int(2, 20) * 20, v = N * pc / 100;
+        const how = { 10: 'divide by 10', 20: 'divide by 10, then double', 25: 'divide by 4', 50: 'take half', 75: 'take a quarter, then multiply by 3' }[pc];
+        return q(numQ(v, [N - v, v * 2, N / 10 + pc, v + 10], String, true), {
+          prompt: 'What is ' + pc + '% of ' + N + '?',
+          skill: 'Easy percentages: 10% = ÷ 10, 25% = ÷ 4, 50% = half, 75% = three quarters.',
+          explanation: 'For ' + pc + '%, ' + how + ': ' + pc + '% of ' + N + ' = ' + v + '.'
         });
       } },
-      { id: 'fractions', make: function (r) {
-        const pair = r.pick([[2, 3], [3, 6], [4, 12], [2, 6], [3, 4], [4, 6], [6, 12], [2, 4]]), a = pair[0], b = pair[1], L = lcm(a, b);
-        const x = L * r.nonZero(-4, 5), c = x / a + x / b;
-        return q(numQ(x, [c * (a + b), c * Math.min(a, b), c, x / 2]), {
-          prompt: 'Solve x/' + a + ' + x/' + b + ' = ' + n(c),
-          skill: 'Multiply both sides by the common denominator to clear every fraction at once.',
-          explanation: 'Multiply by ' + L + ': ' + (L / a) + 'x + ' + (L / b) + 'x = ' + n(c * L) + ', so ' + (L / a + L / b) + 'x = ' + n(c * L) + ' and x = ' + n(x) + '.'
+      { id: 'square', make: function (r) {
+        const k = r.int(4, 15), v = k * k;
+        return q(numQ(v, [2 * k, v + k, v - k, (k + 1) * (k + 1)], String, true), {
+          prompt: 'What is ' + k + '²?',
+          skill: 'A square is a number times itself: k² = k × k (not 2 × k).',
+          explanation: k + '² = ' + k + ' × ' + k + ' = ' + v + '.'
         });
       } },
-      { id: 'inequality', make: function (r) {
-        const a = r.int(2, 6), x0 = r.nonZero(-6, 6), b = r.nonZero(-9, 9), c = -a * x0 + b;
-        return {
-          prompt: 'Solve −' + a + 'x ' + (b < 0 ? '−' : '+') + ' ' + Math.abs(b) + ' > ' + n(c),
-          answer: 'x < ' + n(x0), wrong: ['x > ' + n(x0), 'x < ' + n(-x0), 'x > ' + n(-x0)],
-          fill: function (rng, i) { return 'x < ' + n(x0 + i); },
-          skill: 'Dividing an inequality by a negative number flips its direction.',
-          explanation: '−' + a + 'x > ' + n(c) + ' ' + (b < 0 ? '+' : '−') + ' ' + Math.abs(b) + ' = ' + n(c - b) + '. Divide by −' + a + ' and flip the sign: x < ' + n(x0) + '.'
-        };
+      { id: 'fraction-of', make: function (r) {
+        const d = r.pick([2, 3, 4, 5]), a = r.int(1, d - 1), N = d * r.int(3, 12), v = N / d * a;
+        return q(numQ(v, [N / d, N * a, N - v, v + a], String, true), {
+          prompt: 'What is ' + a + '/' + d + ' of ' + N + '?',
+          skill: 'To take a fraction a/b of a number: divide by b, then multiply by a.',
+          explanation: N + ' ÷ ' + d + ' = ' + (N / d) + ', then ' + (N / d) + ' × ' + a + ' = ' + v + '.'
+        });
+      } },
+      { id: 'change', make: function (r) {
+        const price = r.int(1, 6) * 100 + r.pick([0, 20, 50, 80]), qty = r.int(2, 4), total = price * qty;
+        const note = [1000, 2000, 5000].filter(function (x) { return x > total; })[0], v = note - total;
+        const item = r.pick(['notebooks', 'coffees', 'croissants', 'tickets', 'pens']);
+        return q(numQ(v, [note - price, v + 100, v - 100, v + 50], euro, true, 10), {
+          prompt: 'You buy ' + qty + ' ' + item + ' at ' + euro(price) + ' each and pay with a ' + (note / 100) + ' € note. How much change do you get?',
+          skill: 'Money: work out the total first, then subtract it from what you paid.',
+          explanation: 'Total: ' + qty + ' × ' + euro(price) + ' = ' + euro(total) + '. Change: ' + euro(note) + ' − ' + euro(total) + ' = ' + euro(v) + '.'
+        });
+      } },
+      { id: 'time', make: function (r) {
+        const start = r.int(13, 21) * 60 + r.pick([0, 10, 15, 20, 30, 40, 45, 50]), dur = r.int(1, 2) * 60 + r.pick([5, 15, 25, 35, 40, 50]), end = start + dur;
+        const what = r.pick(['A film', 'A match', 'A train journey', 'A concert']);
+        return q(numQ(end, [end + 60, end - 60, end + 10, end - 10], clock, true, 5), {
+          prompt: what + ' starts at ' + clock(start) + ' and lasts ' + Math.floor(dur / 60) + ' h ' + (dur % 60) + ' min. When does it end?',
+          skill: 'Durations: add the hours, then the minutes; 60 minutes make one more hour.',
+          explanation: clock(start) + ' + ' + Math.floor(dur / 60) + ' h = ' + clock(start + Math.floor(dur / 60) * 60) + ', then + ' + (dur % 60) + ' min = ' + clock(end) + '.'
+        });
       } }
     ],
+    // ---------------------------------------------------------------- level 2: everyday algebra
     2: [
-      { id: 'dot', make: function (r) {
-        const a = r.nonZero(-6, 6), b = r.nonZero(-6, 6), c = r.nonZero(-6, 6), d = r.nonZero(-6, 6), res = a * c + b * d;
-        const o = numQ(res, [a * c - b * d, a * d + b * c]);
-        o.wrong.unshift(vec(a * c, b * d));
-        return q(o, {
-          prompt: 'u = ' + vec(a, b) + ' and v = ' + vec(c, d) + '. Compute u · v.',
-          skill: 'A dot product is a number, not a vector: multiply matching coordinates, then add.',
-          explanation: 'u · v = ' + n(a) + '×' + p(c) + ' + ' + p(b) + '×' + p(d) + ' = ' + n(a * c) + ' + ' + p(b * d) + ' = ' + n(res) + '.'
+      { id: 'eq-add', make: function (r) {
+        const x = r.int(3, 40), a = r.int(5, 30), b = x + a;
+        return q(numQ(x, [b + a, a, x + 10], function (v) { return 'x = ' + n(v); }), {
+          prompt: 'Solve: x + ' + a + ' = ' + b,
+          skill: 'To undo "+ a", subtract a from both sides.',
+          explanation: 'x = ' + b + ' − ' + a + ' = ' + x + '.'
         });
       } },
-      { id: 'perp', make: function (r) {
-        const k = r.nonZero(-6, 6), c = r.nonZero(-5, 5), t = r.pick([-2, -1, 1, 2]), a = c * t, b = -k * t;
-        return q(numQ(k, [-k, 2 * k, k + c]), {
-          prompt: 'For which k are u = ' + vec(a, b) + ' and v = ' + vec('k', c) + ' perpendicular?',
-          skill: 'Two vectors are perpendicular exactly when their dot product is 0.',
-          explanation: 'u · v = ' + n(a) + 'k + ' + p(b) + '×' + p(c) + ' = 0, so ' + n(a) + 'k = ' + n(-b * c) + ' and k = ' + n(k) + '.'
+      { id: 'eq-mul', make: function (r) {
+        const a = r.int(2, 6), x = r.int(2, 10), b = r.int(1, 15), c = a * x + b;
+        return q(numQ(x, [(c + b) / a, c - b, x + 1, c / a], function (v) { return 'x = ' + n(v); }), {
+          prompt: 'Solve: ' + a + 'x + ' + b + ' = ' + c,
+          skill: 'Undo the operations in reverse order: first subtract, then divide.',
+          explanation: a + 'x = ' + c + ' − ' + b + ' = ' + (c - b) + ', so x = ' + (c - b) + ' ÷ ' + a + ' = ' + x + '.'
         });
       } },
-      { id: 'norm', make: function (r) {
-        const t = r.pick([[3, 4, 5], [5, 12, 13], [8, 15, 17], [6, 8, 10], [7, 24, 25], [9, 12, 15], [12, 16, 20]]);
-        let x = t[0], y = t[1]; const c = t[2];
-        if (r.next() < 0.5) { const s = x; x = y; y = s; }
-        x *= r.sign(); y *= r.sign();
-        return q(numQ(c, [Math.abs(x) + Math.abs(y), c * c, c + 1], String, true), {
-          prompt: 'What is the length ‖v‖ of v = ' + vec(x, y) + '?',
-          skill: '‖(x, y)‖ = √(x² + y²): Pythagoras applied to the coordinates. Signs never matter.',
-          explanation: '‖v‖ = √(' + p(x) + '² + ' + p(y) + '²) = √(' + (x * x) + ' + ' + (y * y) + ') = √' + (c * c) + ' = ' + c + '.'
+      { id: 'evaluate', make: function (r) {
+        const a = r.int(2, 7), b = r.nonZero(-9, 9), x = r.int(2, 9), v = a * x + b;
+        const expr = a + 'x ' + (b < 0 ? '− ' : '+ ') + Math.abs(b);
+        return q(numQ(v, [a + x + b, a * x - b, a * (x + b)]), {
+          prompt: 'What is ' + expr + ' when x = ' + x + '?',
+          skill: 'Replace x by its value, then follow the order of operations.',
+          explanation: a + ' × ' + x + ' ' + (b < 0 ? '− ' : '+ ') + Math.abs(b) + ' = ' + (a * x) + ' ' + (b < 0 ? '− ' : '+ ') + Math.abs(b) + ' = ' + n(v) + '.'
         });
       } },
-      { id: 'AB', make: function (r) {
-        const x1 = r.int(-7, 7), y1 = r.int(-7, 7); let x2, y2;
-        do { x2 = r.int(-7, 7); y2 = r.int(-7, 7); } while (x2 === x1 || y2 === y1 || x2 - x1 === y2 - y1);
-        const dx = x2 - x1, dy = y2 - y1;
-        return {
-          prompt: 'A = ' + vec(x1, y1) + ' and B = ' + vec(x2, y2) + '. What are the coordinates of the vector AB?',
-          answer: vec(dx, dy), wrong: [vec(-dx, -dy), vec(x1 + x2, y1 + y2), vec(dy, dx)],
-          fill: function (rng, i) { return vec(dx + i, dy); },
-          skill: 'AB = B − A: always arrival minus departure.',
-          explanation: 'AB = (' + n(x2) + ' − ' + p(x1) + ', ' + n(y2) + ' − ' + p(y1) + ') = ' + vec(dx, dy) + '.'
-        };
-      } },
-      { id: 'work', make: function (r) {
-        let a, b; do { a = r.int(-5, 10); b = r.int(-5, 10); } while (a === 0 && b === 0);
-        const c = r.nonZero(-4, 8), e = r.nonZero(-4, 8), W = a * c + b * e;
-        return q(numQ(W, [a * c, a * e + b * c, a * c - b * e], function (v) { return n(v) + ' J'; }), {
-          prompt: 'A force F = ' + vec(a, b) + ' N moves an object by d = ' + vec(c, e) + ' m. How much work does F do?',
-          skill: 'Work is a dot product, W = F · d: only the part of the force along the motion counts.',
-          explanation: 'W = ' + n(a) + '×' + p(c) + ' + ' + p(b) + '×' + p(e) + ' = ' + n(W) + ' J.' + (W < 0 ? ' Negative: the force mostly works against the motion.' : '')
+      { id: 'proportion', make: function (r) {
+        const u = r.pick([40, 50, 60, 75, 80, 120, 150]), n1 = r.int(2, 5), n2 = r.int(n1 + 1, 10), item = r.pick(['croissants', 'apples', 'bus tickets', 'postcards']);
+        const v = n2 * u;
+        return q(numQ(v, [n1 * u + (n2 - n1) * 100, v + u, v - u], euro, true, 10), {
+          prompt: n1 + ' ' + item + ' cost ' + euro(n1 * u) + '. How much do ' + n2 + ' cost?',
+          skill: 'Proportionality: find the price of one, then multiply.',
+          explanation: 'One costs ' + euro(n1 * u) + ' ÷ ' + n1 + ' = ' + euro(u) + ', so ' + n2 + ' cost ' + n2 + ' × ' + euro(u) + ' = ' + euro(v) + '.'
         });
       } },
-      { id: 'collinear', make: function (r) {
-        const a = r.nonZero(-5, 5), b = r.nonZero(-6, 6), t = r.pick([-3, -2, 2, 3]), c = a * t, k = b * t;
-        return q(numQ(k, [-k, b + t, c * b]), {
-          prompt: 'For which k are u = ' + vec(a, b) + ' and v = ' + vec(c, 'k') + ' collinear?',
-          skill: 'u and v are collinear exactly when det(u, v) = x·y′ − y·x′ = 0.',
-          explanation: 'det(u, v) = ' + n(a) + '·k − ' + p(b) + '·' + p(c) + ' = 0, so k = ' + n(b * c) + ' ÷ ' + p(a) + ' = ' + n(k) + '. Indeed v = ' + n(t) + '·u.'
+      { id: 'speed', make: function (r) {
+        const v = r.pick([40, 50, 60, 70, 80, 90, 100, 120]), t = r.pick([0.5, 1.5, 2, 2.5, 3]), d = v * t;
+        const tTxt = t === 0.5 ? '30 min' : Math.floor(t) + ' h' + (t % 1 ? ' 30 min' : '');
+        return q(numQ(d, [v * Math.floor(t) + 30, d + v / 2, d - 10, v + 30], unit('km'), true, 5), {
+          prompt: 'A car drives at ' + v + ' km/h for ' + tTxt + '. How far does it go?',
+          skill: 'Distance = speed × time, with the time in hours (30 min = 0.5 h).',
+          explanation: tTxt + ' = ' + dec(t) + ' h, so ' + v + ' × ' + dec(t) + ' = ' + d + ' km.'
         });
       } },
-      { id: 'area', make: function (r) {
-        let a, b, c, d, det;
-        do { a = r.int(-5, 6); b = r.int(-5, 6); c = r.int(-5, 6); d = r.int(-5, 6); det = a * d - b * c; } while (det === 0);
-        const A = Math.abs(det);
-        return q(numQ(A, [a * c + b * d, A % 2 === 0 ? A / 2 : 2 * A, Math.abs(a * d) + Math.abs(b * c)], String, true), {
-          prompt: 'What is the area of the parallelogram spanned by u = ' + vec(a, b) + ' and v = ' + vec(c, d) + '?',
-          skill: '|det(u, v)| = |x·y′ − y·x′| is the area of the parallelogram built on u and v.',
-          explanation: 'det(u, v) = ' + n(a) + '×' + p(d) + ' − ' + p(b) + '×' + p(c) + ' = ' + n(det) + ', so the area is |' + n(det) + '| = ' + A + '.'
+      { id: 'average', make: function (r) {
+        const m = r.int(8, 15), a = m + r.int(-4, 4), b = m + r.int(-4, 4), c = m + r.int(-4, 4), d = 4 * m - a - b - c;
+        return q(numQ(m, [m + 1, m - 1, Math.round((a + b + c + d) / 3)], String, true), {
+          prompt: 'Your marks are ' + [a, b, c, d].join(', ') + '. What is your average?',
+          skill: 'Average = sum of the values ÷ number of values.',
+          explanation: '(' + [a, b, c, d].join(' + ') + ') ÷ 4 = ' + (4 * m) + ' ÷ 4 = ' + m + '.'
         });
       } },
-      { id: 'angle', make: function (r) {
-        const cs = r.pick(ANGLE_CASES), s = r.int(1, 3), u = cs.u, v = [cs.v[0] * s, cs.v[1] * s], dot = u[0] * v[0] + u[1] * v[1];
-        const others = r.shuffle([0, 45, 90, 135, 180].filter(function (x) { return x !== cs.deg; })).slice(0, 3);
-        return {
-          prompt: 'What is the angle between u = ' + vec(u[0], u[1]) + ' and v = ' + vec(v[0], v[1]) + '?',
-          answer: cs.deg + '°', wrong: others.map(function (x) { return x + '°'; }),
-          fill: function (rng, i) { return (cs.deg + 30 * i) + '°'; },
-          skill: 'cos θ = (u · v) / (‖u‖·‖v‖). The sign of u · v alone tells you acute, right or obtuse.',
-          explanation: 'u · v = ' + n(dot) + (dot === 0 ? ', so the vectors are perpendicular' : '') + '. cos θ = ' + cs.cos + ', so θ = ' + cs.deg + '°.'
-        };
-      } },
-      { id: 'projection', make: function (r) {
-        const v = r.pick([[3, 4], [4, 3], [0, 5], [5, 0], [-3, 4], [4, -3]]); let a, b, dot;
-        do { a = r.int(-6, 8); b = r.int(-6, 8); dot = a * v[0] + b * v[1]; } while (dot === 0 || dot % 5 !== 0);
-        const res = dot / 5;
-        return q(numQ(res, [dot, dot / 25, -res, res + 1]), {
-          prompt: 'What is the scalar projection of u = ' + vec(a, b) + ' onto v = ' + vec(v[0], v[1]) + '?',
-          skill: 'The scalar projection of u on v is (u · v) / ‖v‖. Divide by the length, not by its square.',
-          explanation: 'u · v = ' + n(dot) + ' and ‖v‖ = 5, so the projection is ' + n(dot) + ' ÷ 5 = ' + n(res) + '.'
+      { id: 'discount', make: function (r) {
+        const P = r.int(4, 20) * 10, pc = r.pick([10, 20, 25, 30, 50]), v = P * (100 - pc);
+        return q(numQ(v, [P * pc, P * 100 - pc * 100, P * (100 + pc)], euro, true, 100), {
+          prompt: 'A jacket costs ' + P + ' €. It is ' + pc + '% off. What is the new price?',
+          skill: 'A discount of p%: compute p% of the price, then subtract it.',
+          explanation: pc + '% of ' + P + ' € = ' + euro(P * pc) + ', so ' + P + ' € − ' + euro(P * pc) + ' = ' + euro(v) + '.'
         });
       } },
-      { id: 'combo', make: function (r) {
-        const u = [r.int(-5, 5), r.int(-5, 5)], v = [r.int(-5, 5), r.int(-5, 5)], al = r.pick([2, 3, -1, -2]), be = r.pick([2, 3, -1, -2, 4]);
-        const x = al * u[0] + be * v[0], y = al * u[1] + be * v[1];
-        const coef = function (k) { return k === 1 ? '' : k === -1 ? '−' : n(k); };
-        return {
-          prompt: 'u = ' + vec(u[0], u[1]) + ' and v = ' + vec(v[0], v[1]) + '. Compute ' + coef(al) + 'u ' + (be < 0 ? '−' : '+') + ' ' + (Math.abs(be) === 1 ? '' : Math.abs(be)) + 'v.',
-          answer: vec(x, y),
-          wrong: [vec(al * u[0] - be * v[0], al * u[1] - be * v[1]), vec(be * u[0] + al * v[0], be * u[1] + al * v[1]), vec(y, x)],
-          fill: function (rng, i) { return vec(x + i, y); },
-          skill: 'Scalars act on each coordinate separately: do the x line, then the y line.',
-          explanation: 'x: ' + n(al) + '×' + p(u[0]) + ' + ' + p(be) + '×' + p(v[0]) + ' = ' + n(x) + '; y: ' + n(al) + '×' + p(u[1]) + ' + ' + p(be) + '×' + p(v[1]) + ' = ' + n(y) + '.'
-        };
+      { id: 'sequence', make: function (r) {
+        const a = r.int(1, 20), d = r.pick([-5, -4, -3, -2, 2, 3, 4, 5, 6, 7]), t = [0, 1, 2, 3].map(function (i) { return a + i * d; }), v = a + 4 * d;
+        return q(numQ(v, [v + 1, v + d, v - 2 * d]), {
+          prompt: 'What comes next: ' + t.map(n).join(', ') + ', …?',
+          skill: 'Arithmetic sequence: find the step between two terms, then add it again.',
+          explanation: 'Each term ' + (d > 0 ? 'adds ' + d : 'subtracts ' + (-d)) + ', so ' + n(t[3]) + (d > 0 ? ' + ' + d : ' − ' + (-d)) + ' = ' + n(v) + '.'
+        });
+      } },
+      { id: 'negatives', make: function (r) {
+        if (r.next() < 0.5) {
+          const a = r.int(-15, -2), b = r.int(3, 20), v = a + b;
+          return q(numQ(v, [-v, Math.abs(a) + b, a - b]), {
+            prompt: 'What is ' + n(a) + ' + ' + b + '?',
+            skill: 'Adding a positive number to a negative one: move right on the number line.',
+            explanation: 'Start at ' + n(a) + ' and move ' + b + ' to the right: ' + n(v) + '.'
+          });
+        }
+        const a = r.int(-9, -2), b = r.nonZero(-9, 9), v = a * b;
+        return q(numQ(v, [-v, a + b, v + 1]), {
+          prompt: 'What is ' + n(a) + ' × ' + (b < 0 ? '(' + n(b) + ')' : b) + '?',
+          skill: 'Signs: minus × minus = plus, minus × plus = minus.',
+          explanation: Math.abs(a) + ' × ' + Math.abs(b) + ' = ' + Math.abs(v) + ', and the sign is ' + (v > 0 ? 'plus (two minus signs)' : 'minus (one minus sign)') + ': ' + n(v) + '.'
+        });
       } }
     ],
+    // ---------------------------------------------------------------- level 3: shapes & logic
     3: [
+      { id: 'rect-area', make: function (r) {
+        const L = r.int(4, 15), W = r.int(2, L - 1);
+        return q(numQ(L * W, [2 * (L + W), L + W, L * W + L], unit('m²'), true), {
+          prompt: 'A room is ' + L + ' m long and ' + W + ' m wide. What is its area?',
+          skill: 'Area of a rectangle = length × width (in square units).',
+          explanation: L + ' × ' + W + ' = ' + (L * W) + ' m².'
+        });
+      } },
+      { id: 'perimeter', make: function (r) {
+        const L = r.int(4, 15), W = r.int(2, L - 1), v = 2 * (L + W);
+        return q(numQ(v, [L * W, L + W, 2 * L + W], unit('m'), true), {
+          prompt: 'A garden is ' + L + ' m long and ' + W + ' m wide. How much fence goes all around it?',
+          skill: 'Perimeter of a rectangle = 2 × (length + width): the distance all around.',
+          explanation: '2 × (' + L + ' + ' + W + ') = 2 × ' + (L + W) + ' = ' + v + ' m.'
+        });
+      } },
+      { id: 'triangle-area', make: function (r) {
+        const b = r.int(2, 9) * 2, hh = r.int(3, 12), v = b * hh / 2;
+        return q(numQ(v, [b * hh, b + hh, v + hh], unit('cm²'), true), {
+          prompt: 'A triangle has a base of ' + b + ' cm and a height of ' + hh + ' cm. What is its area?',
+          skill: 'Area of a triangle = base × height ÷ 2.',
+          explanation: b + ' × ' + hh + ' = ' + (b * hh) + ', then ÷ 2 = ' + v + ' cm².'
+        });
+      } },
+      { id: 'angles', make: function (r) {
+        const a = r.int(25, 85), b = r.int(20, 150 - a), v = 180 - a - b;
+        return q(numQ(v, [360 - a - b, 180 - a, v + 10], function (x) { return x + '°'; }, true, 5), {
+          prompt: 'Two angles of a triangle measure ' + a + '° and ' + b + '°. What is the third angle?',
+          skill: 'The three angles of a triangle always add up to 180°.',
+          explanation: '180 − ' + a + ' − ' + b + ' = ' + v + '°.'
+        });
+      } },
       { id: 'pythagoras', make: function (r) {
-        const t = r.pick([[3, 4, 5], [5, 12, 13], [8, 15, 17], [7, 24, 25], [20, 21, 29]]), k = r.pick([1, 1, 2, 3]);
-        const a = t[0] * k, b = t[1] * k, c = t[2] * k, skill = 'Pythagoras: in a right triangle a² + b² = c², where c is the side opposite the right angle.';
-        if (r.next() < 0.5) return q(numQ(c, [a + b, c + 1, c - 1], String, true), {
-          prompt: 'A right triangle has legs ' + a + ' and ' + b + '. How long is the hypotenuse?', skill: skill,
-          explanation: 'c² = ' + a + '² + ' + b + '² = ' + (a * a) + ' + ' + (b * b) + ' = ' + (c * c) + ', so c = ' + c + '.'
-        });
-        const o = numQ(b, [c - a, b + 1, a], String, true);
-        o.wrong.unshift('√' + (c * c + a * a));
-        return q(o, {
-          prompt: 'A right triangle has hypotenuse ' + c + ' and one leg ' + a + '. How long is the other leg?', skill: skill,
-          explanation: 'b² = ' + c + '² − ' + a + '² = ' + (c * c) + ' − ' + (a * a) + ' = ' + (b * b) + ', so b = ' + b + '.'
+        const t = r.pick([[3, 4, 5], [6, 8, 10], [5, 12, 13], [9, 12, 15], [8, 15, 17], [12, 16, 20]]), k = r.next() < 0.5, a = k ? t[0] : t[1], b = k ? t[1] : t[0], c = t[2];
+        return q(numQ(c, [a + b, c + 1, c - 1, a * b / 2], unit('cm'), true), {
+          prompt: 'A right triangle has two short sides of ' + a + ' cm and ' + b + ' cm. How long is the longest side?',
+          skill: 'Pythagoras: in a right triangle, longest side² = side₁² + side₂².',
+          explanation: a + '² + ' + b + '² = ' + (a * a) + ' + ' + (b * b) + ' = ' + (c * c) + ', and √' + (c * c) + ' = ' + c + ' cm.'
         });
       } },
-      { id: 'thales', make: function (r) {
-        const a = r.int(2, 6), b = a + r.int(1, 6), unit = b / gcd(a, b), c = unit * r.int(1, 3) * (unit < 4 ? 2 : 1), mn = c * a / b;
-        return q(numQ(mn, [c * b / a, c - (b - a), mn + 1, c - mn], String, true), {
-          prompt: 'In triangle ABC, M is on [AB] and N on [AC] with (MN) ∥ (BC). AM = ' + a + ', AB = ' + b + ', BC = ' + c + '. Find MN.',
-          skill: 'Intercept (Thales) theorem: parallel lines keep ratios, so AM/AB = AN/AC = MN/BC.',
-          explanation: 'MN / BC = AM / AB, so MN = ' + c + ' × ' + a + '/' + b + ' = ' + mn + '.'
+      { id: 'cube', make: function (r) {
+        const s = r.int(2, 6), v = s * s * s;
+        return q(numQ(v, [3 * s, s * s, 6 * s * s], unit('cm³'), true), {
+          prompt: 'What is the volume of a cube with ' + s + ' cm sides?',
+          skill: 'Volume of a cube = side × side × side.',
+          explanation: s + ' × ' + s + ' × ' + s + ' = ' + v + ' cm³.'
         });
       } },
-      { id: 'cosines', make: function (r) {
-        const cs = r.pick([[3, 8, 60, 7], [5, 8, 60, 7], [7, 15, 60, 13], [8, 15, 60, 13], [5, 21, 60, 19], [10, 16, 60, 14], [3, 5, 120, 7], [7, 8, 120, 13]]);
-        const a = cs[0], b = cs[1], C = cs[2], c = cs[3], sq = a * a + b * b, other = C === 60 ? sq + a * b : sq - a * b;
+      { id: 'circle', make: function (r) {
+        const rad = r.int(2, 10), v = 3 * rad * rad;
+        return q(numQ(v, [6 * rad, 12 * rad * rad, 3 * rad], unit('cm²'), true), {
+          prompt: 'Taking π ≈ 3, what is the area of a circle of radius ' + rad + ' cm?',
+          skill: 'Area of a disc = π × radius² (and its perimeter is 2 × π × radius).',
+          explanation: '3 × ' + rad + '² = 3 × ' + (rad * rad) + ' = ' + v + ' cm².'
+        });
+      } },
+      { id: 'units', make: function (r) {
+        const c = r.pick([{ a: 'km', b: 'm', f: 1000 }, { a: 'm', b: 'cm', f: 100 }, { a: 'L', b: 'mL', f: 1000 }, { a: 'h', b: 'min', f: 60 }, { a: 'kg', b: 'g', f: 1000 }]);
+        const x = r.int(2, 9) + r.pick([0, 0.5]), v = Math.round(x * c.f);
+        return q(numQ(v, [v / 10, v * 10, Math.round(x * 100)], unit(c.b), true, c.f === 60 ? 15 : c.f / 10), {
+          prompt: 'How many ' + c.b + ' are there in ' + dec(x) + ' ' + c.a + '?',
+          skill: 'Unit conversion: 1 km = 1000 m, 1 m = 100 cm, 1 L = 1000 mL, 1 kg = 1000 g, 1 h = 60 min.',
+          explanation: '1 ' + c.a + ' = ' + c.f + ' ' + c.b + ', so ' + dec(x) + ' × ' + c.f + ' = ' + v + ' ' + c.b + '.'
+        });
+      } },
+      { id: 'marbles', make: function (r) {
+        const cols = [['red', r.int(1, 6)], ['blue', r.int(1, 6)], ['green', r.int(1, 5)]], T = cols[0][1] + cols[1][1] + cols[2][1];
+        const pick = r.int(0, 2), x = cols[pick][1], other = cols[(pick + 1) % 3][1];
+        const ans = frac(x, T);
+        const pool = [frac(x, T - x), frac(other, T), '1/3', frac(x + 1, T), frac(Math.max(1, x - 1), T), '1/2', '1/4'];
         return {
-          prompt: 'A triangle has sides ' + a + ' and ' + b + ' with an angle of ' + C + '° between them. How long is the third side?',
-          answer: String(c), wrong: [rootStr(sq), rootStr(other), String(c + 1), String(c - 1)],
-          fill: function (rng, i) { return String(c + i + 1); },
-          skill: 'Law of cosines (Al-Kashi): c² = a² + b² − 2ab·cos C. With C = 90° it is just Pythagoras.',
-          explanation: 'c² = ' + a + '² + ' + b + '² − 2·' + a + '·' + b + '·cos ' + C + '° = ' + (a * a) + ' + ' + (b * b) + ' ' + (C === 60 ? '−' : '+') + ' ' + (a * b) + ' = ' + (c * c) + ', so c = ' + c + '.'
+          prompt: 'A bag holds ' + cols.map(function (c) { return c[1] + ' ' + c[0]; }).join(', ') + ' marbles. You pick one without looking. What is the probability it is ' + cols[pick][0] + '?',
+          answer: ans, wrong: pool.filter(function (s) { return s !== ans && s !== '0' && s !== '1'; }),
+          fill: function (rng, i) { return frac(i, T + i); },
+          skill: 'Probability = number of favourable outcomes ÷ total number of outcomes.',
+          explanation: 'There are ' + x + ' ' + cols[pick][0] + ' marbles out of ' + T + ', so ' + x + '/' + T + (ans !== x + '/' + T ? ' = ' + ans : '') + '.'
         };
       } },
-      { id: 'inscribed', make: function (r) {
-        const al = r.pick([20, 25, 30, 35, 40, 50, 55, 65, 70]), deg = function (v) { return v + '°'; };
-        const skill = 'Inscribed angle theorem: the central angle is twice any inscribed angle standing on the same arc.';
-        if (r.next() < 0.5) return q(numQ(2 * al, [al, al / 2, 180 - al, 180 - 2 * al], deg, true), {
-          prompt: 'On a circle with centre O, the inscribed angle ACB measures ' + al + '°. What is the central angle AOB on the same arc?', skill: skill,
-          explanation: 'AOB = 2 × ACB = 2 × ' + al + '° = ' + (2 * al) + '°.'
-        });
-        const be = 2 * al;
-        return q(numQ(al, [be, 2 * be, 180 - be, 90 - al], deg, true), {
-          prompt: 'On a circle with centre O, the central angle AOB measures ' + be + '°. What is an inscribed angle ACB on the same arc?', skill: skill,
-          explanation: 'ACB = AOB ÷ 2 = ' + be + '° ÷ 2 = ' + al + '°.'
-        });
-      } },
-      { id: 'fermat', make: function (r) {
-        const pr = r.pick([5, 7, 11, 13]), a = r.int(2, pr - 1), qq = r.int(8, 40), rem = r.int(1, pr - 2), e = (pr - 1) * qq + rem, ans = powmod(a, rem, pr);
-        return q(numQ(ans, [1, a % pr, (ans + 1) % pr, powmod(a, e % pr, pr)], String), {
-          prompt: 'What is the remainder when ' + a + sup(e) + ' is divided by ' + pr + '?',
-          skill: "Fermat's little theorem: for a prime p not dividing a, a^(p−1) ≡ 1 (mod p). Reduce the exponent modulo p − 1.",
-          explanation: pr + ' is prime, so ' + a + sup(pr - 1) + ' ≡ 1. Since ' + e + ' = ' + (pr - 1) + '×' + qq + ' + ' + rem + ', ' + a + sup(e) + ' ≡ ' + a + sup(rem) + ' = ' + Math.pow(a, rem) + ' ≡ ' + ans + ' (mod ' + pr + ').'
-        }, { fill: function (rng, i) { return String((ans + i) % pr); } });
-      } },
-      { id: 'triangle', make: function (r) {
-        const fmt = function (s) { s.sort(function (x, y) { return x - y; }); return s.join(', '); };
-        const valid = function () { const a = r.int(2, 9), b = r.int(a, 12), c = r.int(b - a + 1, a + b - 1); return fmt([a, b, c]); };
-        const a = r.int(2, 7), b = r.int(a, 9), c = a + b + r.int(0, 4);
-        return {
-          prompt: 'Which three lengths can NOT be the sides of a triangle?',
-          answer: fmt([a, b, c]), wrong: [valid(), valid(), valid(), valid()],
-          fill: function () { return valid(); },
-          skill: 'Triangle inequality: the longest side must be strictly shorter than the sum of the two others.',
-          explanation: a + ' + ' + b + ' = ' + (a + b) + (a + b === c ? ' = ' : ' < ') + c + ': the two short sides cannot reach each other' + (a + b === c ? ' (the triangle would be flat).' : '.')
-        };
-      } },
-      { id: 'geometric', make: function (r) {
-        const g = r.pick([2, 2, 3]), N = g === 2 ? r.int(4, 9) : r.int(3, 6), top = Math.pow(g, N + 1), ans = (top - 1) / (g - 1);
-        return q(numQ(ans, [top, (Math.pow(g, N) - 1) / (g - 1), top - 1, ans + 1], String, true), {
-          prompt: 'Compute 1 + ' + g + ' + ' + g + '² + … + ' + g + sup(N) + '.',
-          skill: 'Geometric sum: 1 + r + … + rⁿ = (rⁿ⁺¹ − 1)/(r − 1). Multiply by r and subtract to see why.',
-          explanation: '(' + g + sup(N + 1) + ' − 1)/(' + g + ' − 1) = (' + top + ' − 1)/' + (g - 1) + ' = ' + ans + '.'
-        });
-      } },
-      { id: 'bayes', make: function (r) {
-        const s = r.pick([20, 40, 60, 100]), sens = r.pick([90, 80]), fpr = r.pick([5, 10]);
-        const tp = s * sens / 100, fp = (1000 - s) * fpr / 100, P = Math.round(100 * tp / (tp + fp));
-        return q(numQ(P, [sens, 100 - fpr, s / 10], function (v) { return v + '%'; }, true), {
-          prompt: s + ' people in 1,000 have a condition. A test catches ' + sens + '% of them but also flags ' + fpr + '% of healthy people. You test positive: about how likely is it that you have it?',
-          skill: 'Bayes: count true and false positives out of 1,000 people. When a condition is rare, many positives are false.',
-          explanation: 'True positives: ' + sens + '% of ' + s + ' = ' + tp + '. False positives: ' + fpr + '% of ' + (1000 - s) + ' = ' + fp + '. So ' + tp + ' / (' + tp + ' + ' + fp + ') ≈ ' + P + '%.'
-        });
-      } },
-      { id: 'pigeonhole', make: function (r) {
-        const cs = r.pick([
-          { k: 12, txt: function (m) { return 'people must be in a room to be sure that at least ' + m + ' share a birth month'; } },
-          { k: 7, txt: function (m) { return 'people must you gather to be sure that at least ' + m + ' were born on the same day of the week'; } },
-          { k: 4, txt: function (m) { return 'socks must you pull from a drawer of 4 colours to be sure to get ' + m + ' of the same colour'; } },
-          { k: 10, txt: function (m) { return 'whole numbers must you pick to be sure that at least ' + m + ' end with the same digit'; } }
-        ]), m = r.pick([2, 3]), ans = cs.k * (m - 1) + 1;
-        return q(numQ(ans, [cs.k * m, cs.k + m, cs.k * (m - 1)], String, true), {
-          prompt: 'How many ' + cs.txt(m) + '?',
-          skill: 'Pigeonhole principle: with n boxes, n·(m − 1) + 1 objects force at least m into the same box.',
-          explanation: 'With ' + cs.k + ' possibilities you could have ' + (m - 1) + ' of each, ' + (cs.k * (m - 1)) + ' in total, with no ' + m + ' alike. One more forces it: ' + ans + '.'
-        });
-      } },
-      { id: 'ivt', make: function (r) {
-        const c1 = r.int(1, 3), k = r.int(0, 3), lo = k * k * k + c1 * k, hi = (k + 1) * (k + 1) * (k + 1) + c1 * (k + 1), qv = r.int(lo + 1, hi - 1);
-        const f = function (x) { return x * x * x + c1 * x - qv; }, I = function (j) { return '[' + j + ', ' + (j + 1) + ']'; };
-        return {
-          prompt: 'f(x) = x³ + ' + (c1 === 1 ? '' : c1) + 'x − ' + qv + '. Which interval surely contains a root of f?',
-          answer: I(k), wrong: [I(k + 1), I(k + 2), k >= 1 ? I(k - 1) : I(k + 3)],
-          fill: function (rng, i) { return I(k + 3 + i); },
-          skill: 'Intermediate value theorem: a continuous function that changes sign on [a, b] has a root in between.',
-          explanation: 'f(' + k + ') = ' + n(f(k)) + ' < 0 and f(' + (k + 1) + ') = ' + n(f(k + 1)) + ' > 0, and f is continuous, so it crosses 0 in ' + I(k) + '.'
-        };
-      } },
-      { id: 'gcd', make: function (r) {
-        const g = r.int(2, 12); let m, k;
-        do { m = r.int(2, 15); k = r.int(2, 15); } while (m === k || gcd(m, k) !== 1);
-        const A = g * Math.max(m, k), B = g * Math.min(m, k), steps = [];
-        let x = A, y = B;
-        while (y) { steps.push(x + ' = ' + Math.floor(x / y) + '×' + y + ' + ' + (x % y)); const t = x % y; x = y; y = t; }
-        let small = 0; for (let d = 2; d < g; d++) if (g % d === 0) { small = d; break; }
-        return q(numQ(g, [2 * g, A - B, small, 1], String, true), {
-          prompt: 'What is gcd(' + A + ', ' + B + ')?',
-          skill: 'Euclid: gcd(a, b) = gcd(b, a mod b). Repeat until the remainder is 0: the last non-zero remainder wins.',
-          explanation: steps.join('; ') + '. The last non-zero remainder is ' + g + '.'
+      { id: 'pattern', make: function (r) {
+        const a = r.int(1, 5), k = r.pick([2, 3]), t = [0, 1, 2, 3].map(function (i) { return a * Math.pow(k, i); }), v = t[3] * k;
+        return q(numQ(v, [t[3] + (t[3] - t[2]), v + k, t[3] + k], String, true), {
+          prompt: 'What comes next: ' + t.join(', ') + ', …?',
+          skill: 'Look at how you go from one term to the next: here you multiply by the same number each time.',
+          explanation: 'Each term is multiplied by ' + k + ', so ' + t[3] + ' × ' + k + ' = ' + v + '.'
         });
       } }
     ]
@@ -762,7 +722,7 @@
       });
     }
     /** Same 5 questions for every player on the same day and level. */
-    static daily(date, level) { return QuizGenerator.generate(level, 'daily|' + date + '|' + level + '|v1'); }
+    static daily(date, level) { return QuizGenerator.generate(level, 'daily|' + date + '|' + level + '|v2'); }
     static publicView(qs) { return qs.map(function (x) { return { id: x.id, prompt: x.prompt, choices: x.choices }; }); }
     static grade(qs, answers) {
       let correct = 0;
@@ -792,7 +752,7 @@
   return {
     CONFIG: CONFIG, DateUtil: DateUtil, Rng: Rng, Validate: Validate, Habit: Habit, DayEvaluator: DayEvaluator, Stats: Stats,
     Motivation: Motivation, QuizGenerator: QuizGenerator, compareResults: compareResults,
-    LEVEL_LABELS: LEVEL_LABELS, FORM_CHOICES: FORM_CHOICES, FORM_DAYS: FORM_DAYS, PERIODS: PERIODS, FREQ_MAX: FREQ_MAX,
+    LEVEL_LABELS: LEVEL_LABELS, KIND_INFO: KIND_INFO, FORM_CHOICES: FORM_CHOICES, FORM_DAYS: FORM_DAYS, PERIODS: PERIODS, FREQ_MAX: FREQ_MAX,
     GIFTS: GIFTS, GIFT_MESSAGES: GIFT_MESSAGES, giftById: giftById, SUGGESTIONS: SUGGESTIONS, QUIZ_LEVELS: QUIZ_LEVELS,
     REASSURE: REASSURE, PROJECT: PROJECT, hueOf: hueOf, fmtDuration: fmtDuration
   };

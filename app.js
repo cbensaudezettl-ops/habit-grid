@@ -33,6 +33,8 @@
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
   function pct(v) { return v == null ? '–' : Math.round(v * 100) + '%'; }
   function fmtN(x) { return Number.isInteger(x) ? String(x) : x.toFixed(1); }
+  /** 3.5 -> "3½": compact enough for a calendar square. */
+  function fmtHalf(x) { const w = Math.floor(x + 1e-9); return (w || x < 0.5 ? String(w) : '') + (x - w > 0.25 ? '½' : ''); }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
 
@@ -228,11 +230,15 @@
   }
 
   // ================================================================ calendar (GitHub style)
-  /** opts: { today, statusOf(date), onTap(date), width, weeks? } */
+  /**
+   * opts: { today, statusOf(date), onTap(date), width, weeks?, countOf?(date) }
+   * With countOf, each filled-in square shows how many habits were kept that day
+   * (big number) and its day of the month (small number in the corner).
+   */
   function buildCalendar(opts) {
-    const gap = 4, W = Math.max(240, opts.width - 22);
-    let cell = Math.min(30, Math.max(19, (W - 11 * gap) / 12));
-    const weeks = opts.weeks || Math.max(8, Math.floor((W + gap) / (cell + gap)));
+    const gap = 4, W = Math.max(240, opts.width - 22), counts = !!opts.countOf;
+    let cell = counts ? Math.min(38, Math.max(29, (W - 8 * gap) / 9)) : Math.min(30, Math.max(19, (W - 11 * gap) / 12));
+    const weeks = opts.weeks || Math.max(counts ? 6 : 8, Math.floor((W + gap) / (cell + gap)));
     if (opts.weeks) cell = Math.min(30, (W - (weeks - 1) * gap) / weeks);
     const start = D.add(D.weekStart(opts.today), -(weeks - 1) * 7);
     const grid = h('div', { class: 'cal-grid', role: 'grid', 'aria-label': 'Calendar of your days' });
@@ -243,23 +249,44 @@
       for (let d = 0; d < 7; d++) {
         const date = D.add(start, w * 7 + d), status = opts.statusOf(date), dom = Number(date.slice(8));
         if (dom === 1 || (w === 0 && d === 0)) label = D.monthShort(date);
-        const cls = 'day ' + status + (date === opts.today ? ' today' : '');
+        const kept = counts && (status === 'green' || status === 'red') ? opts.countOf(date) : null;
+        const cls = 'day ' + status + (date === opts.today ? ' today' : '') + (counts ? ' counts' : '');
         const words = { green: 'green day', red: 'red day', gray: 'not filled in', none: 'before start', future: 'upcoming' }[status];
+        const aria = D.format(date, 'long') + ', ' + words + (kept ? ', ' + fmtN(kept.kept) + ' of ' + kept.total + ' habits kept' : '');
         grid.appendChild(h('button', {
-          class: cls, type: 'button', 'aria-label': D.format(date, 'long') + ', ' + words, tabindex: status === 'future' ? '-1' : null, 'data-date': date,
+          class: cls, type: 'button', 'aria-label': aria, tabindex: status === 'future' ? '-1' : null, 'data-date': date,
           onclick: status === 'future' || !opts.onTap ? null : function () { opts.onTap(date); }
-        }, dom));
+        }, counts ? [h('span', { class: 'dn' }, String(dom)), kept ? h('span', { class: 'kc' }, fmtHalf(kept.kept)) : null] : dom));
       }
       if (label && w - lastLabelCol >= 3) { months.appendChild(h('span', { style: { left: (w * (cell + gap)) + 'px' } }, label)); lastLabelCol = w; }
     }
     const wd = h('div', { class: 'cal-wd', 'aria-hidden': 'true' }, ['M', '', 'W', '', 'F', '', 'S'].map(function (t) { return h('span', null, t); }));
     return h('div', { class: 'cal', style: { '--cell': cell.toFixed(2) + 'px', '--gap': gap + 'px' } }, h('div'), months, wd, grid);
   }
-  function legend() {
+  function legend(total) {
     return h('div', { class: 'legend' },
       h('span', null, h('i', { class: 'green' }), 'More than 2/3 kept'),
       h('span', null, h('i', { class: 'red' }), '2/3 or less'),
-      h('span', null, h('i', { class: 'gray' }), 'Not filled in yet'));
+      h('span', null, h('i', { class: 'gray' }), 'Not filled in yet'),
+      total ? h('span', { class: 'legend-count' }, h('i', { class: 'sample' }, h('span', { class: 'dn' }, '12'), h('span', { class: 'kc' }, '5')),
+        'Big number: habits kept that day, out of ' + total + '. Small number: the date.') : null);
+  }
+  /** "7 habits · 🌱 4 to gain · 🍂 3 to lose" */
+  function habitTotals(habits) {
+    const g = habits.filter(function (x) { return x.kind === 'good'; }).length, b = habits.length - g;
+    return h('div', { class: 'totals' },
+      h('span', { class: 'pill total' }, plural(habits.length, 'habit') + ' in total'),
+      h('span', { class: 'pill gain' }, HG.KIND_INFO.good.emoji + ' ' + g + ' to gain'),
+      h('span', { class: 'pill lose' }, HG.KIND_INFO.bad.emoji + ' ' + b + ' to lose'));
+  }
+  /** Two small bars: good habits gained and bad habits resisted on one day. */
+  function kindBreakdown(byKind) {
+    return h('div', { class: 'breakdown' }, ['good', 'bad'].filter(function (k) { return byKind[k].total; }).map(function (k) {
+      const x = byKind[k], info = HG.KIND_INFO[k];
+      return h('div', { class: 'bd ' + k },
+        h('div', { class: 'bd-top' }, h('span', null, info.emoji + ' ' + info.short), h('b', null, fmtN(x.kept) + '/' + x.total + ' ' + info.verb)),
+        h('div', { class: 'bar' }, h('i', { style: { width: Math.round(x.kept / x.total * 100) + '%' } })));
+    }));
   }
 
   // ================================================================ onboarding (and habit editing)
@@ -267,23 +294,22 @@
     constructor(app, opts) {
       this.app = app; this.mode = (opts && opts.mode) || 'signup';
       const blank = function () { return { sentence: '', metric: '', freqOn: false, times: 3, per: 'week' }; };
-      const fresh = { email: '', invite: '', code: '', username: '', good: [0, 1, 2, 3, 4].map(blank), bad: [0, 1, 2, 3, 4].map(blank) };
+      const fresh = { email: '', invite: '', code: '', username: '', nGood: 3, nBad: 2, good: [0, 1, 2, 3, 4].map(blank), bad: [0, 1, 2, 3, 4].map(blank) };
       if (this.mode === 'edit') {
         const today = app.state.today;
         const active = app.state.me.habits.map(function (x) { return new HG.Habit(x); }).filter(function (x) { return x.activeOn(today); });
         const conv = function (x) { return { id: x.id, sentence: x.sentence, metric: x.metric, freqOn: !!x.frequency, times: x.frequency ? x.frequency.times : 3, per: x.frequency ? x.frequency.per : 'week' }; };
-        fresh.good = active.filter(function (x) { return x.kind === 'good'; }).map(conv);
-        fresh.bad = active.filter(function (x) { return x.kind === 'bad'; }).map(conv);
+        ['good', 'bad'].forEach(function (kind) {
+          const mine = active.filter(function (x) { return x.kind === kind; }).map(conv);
+          fresh[kind === 'good' ? 'nGood' : 'nBad'] = mine.length;
+          while (mine.length < HG.CONFIG.MAX_GOOD) mine.push(blank());
+          fresh[kind] = mine;
+        });
         this.data = fresh;
       } else {
         this.data = Object.assign(fresh, LocalStore.get(KEYS.ob, {}), { code: '' });
       }
-      this.steps = [];
-      if (this.mode === 'signup') this.steps.push({ id: 'welcome' }, { id: 'email' }, { id: 'code' }, { id: 'username' });
-      const self = this;
-      ['good', 'bad'].forEach(function (kind) { for (let k = 0; k < 5; k++) self.steps.push({ id: 'habit', kind: kind, k: k }); });
-      this.steps.push({ id: 'review' });
-      if (this.mode === 'signup') this.steps.push({ id: 'done' });
+      this.buildSteps();
       this.i = 0;
       if (opts && opts.resume) this.i = Math.max(0, this.steps.findIndex(function (s) { return s.id === opts.resume; }));
       this.touched = {};
@@ -297,12 +323,24 @@
       return this;
     }
     close() { this.el.remove(); }
+    count(kind) { return Math.max(0, Math.min(5, Number(this.data[kind === 'good' ? 'nGood' : 'nBad']) || 0)); }
+    /** The habit steps depend on how many habits the player chose, so the list is rebuilt after the "plan" step. */
+    buildSteps() {
+      const self = this;
+      this.steps = [];
+      if (this.mode === 'signup') this.steps.push({ id: 'welcome' }, { id: 'email' }, { id: 'code' }, { id: 'username' });
+      this.steps.push({ id: 'plan' });
+      ['good', 'bad'].forEach(function (kind) { for (let k = 0; k < self.count(kind); k++) self.steps.push({ id: 'habit', kind: kind, k: k }); });
+      this.steps.push({ id: 'review' });
+      if (this.mode === 'signup') this.steps.push({ id: 'done' });
+    }
     persist() { if (this.mode === 'signup') LocalStore.set(KEYS.ob, Object.assign({}, this.data, { code: '' })); }
     go(i) { this.i = i; this.touched = {}; this.render(); const s = this.el.querySelector('.ob-scroll'); if (s) s.scrollTop = 0; }
     habitList() {
       const d = this.data, out = [];
+      const self = this;
       ['good', 'bad'].forEach(function (kind) {
-        d[kind].forEach(function (x) { out.push({ id: x.id, kind: kind, sentence: x.sentence, metric: x.metric, frequency: x.freqOn ? { times: x.times, per: x.per } : null }); });
+        d[kind].slice(0, self.count(kind)).forEach(function (x) { out.push({ id: x.id, kind: kind, sentence: x.sentence, metric: x.metric, frequency: x.freqOn ? { times: x.times, per: x.per } : null }); });
       });
       return out;
     }
@@ -311,7 +349,7 @@
       const r = HG.Habit.validate({ sentence: x.sentence, metric: x.metric, frequency: x.freqOn ? { times: x.times, per: x.per } : null }, kind);
       if (r.ok) {
         const key = r.value.sentence.toLowerCase(), self = this;
-        const dup = ['good', 'bad'].some(function (kk) { return self.data[kk].some(function (o, j) { return !(kk === kind && j === k) && HG.Validate.text(o.sentence, 200).toLowerCase() === key; }); });
+        const dup = ['good', 'bad'].some(function (kk) { return self.data[kk].slice(0, self.count(kk)).some(function (o, j) { return !(kk === kind && j === k) && HG.Validate.text(o.sentence, 200).toLowerCase() === key; }); });
         if (dup) return { ok: false, errors: { sentence: 'You already have this habit.' } };
       }
       return r;
@@ -322,7 +360,7 @@
       const feat = function (e, t, s) { return h('div', { class: 'row', style: { 'margin-top': '14px', 'align-items': 'flex-start' } }, h('div', { style: { 'font-size': '26px', width: '38px', 'text-align': 'center' } }, e), h('div', null, h('b', null, t), h('div', { class: 'tiny' }, s))); };
       return {
         emoji: '🌿', colors: ['#bfe9d6', '#ffd9c2'], title: 'Grow one square at a time',
-        lead: 'Pick up 5 good habits, give up 5 bad ones, and watch your days turn green.',
+        lead: 'Choose a few good habits to gain and bad habits to lose (up to 5 of each), and watch your days turn green.',
         body: h('div', null, feat('🗓️', 'Your grid', 'A GitHub-style calendar of your days: green when you keep more than 2/3 of your habits.'),
           feat('🤝', 'A kind community', 'See how friends are doing and send them a little gift.'),
           feat('🧠', 'Stay awake', 'Three daily math puzzles with a podium.')),
@@ -405,6 +443,32 @@
         }
       };
     }
+    stepPlan() {
+      const self = this, d = this.data, total = h('div', { class: 'plan-total' });
+      const counter = function (kind) {
+        const key = kind === 'good' ? 'nGood' : 'nBad', info = HG.KIND_INFO[kind], max = kind === 'good' ? HG.CONFIG.MAX_GOOD : HG.CONFIG.MAX_BAD;
+        const val = h('b', null, String(self.count(kind)));
+        const step = function (dlt) { return function () { d[key] = Math.max(0, Math.min(max, self.count(kind) + dlt)); val.textContent = String(d[key]); self.persist(); self.validate(); }; };
+        return h('div', { class: 'plan-row ' + kind },
+          h('div', { class: 'em', 'aria-hidden': 'true' }, info.emoji),
+          h('div', { class: 'grow' }, h('b', null, kind === 'good' ? 'How many good habits do you want to pick up?' : 'How many bad habits do you want to give up?'),
+            h('div', { class: 'tiny' }, kind === 'good' ? info.title + ': things to start doing' : info.title + ': things to stop doing')),
+          h('div', { class: 'stepper' }, h('button', { type: 'button', 'aria-label': 'One less ' + info.short.toLowerCase(), onclick: step(-1) }, '−'), val, h('button', { type: 'button', 'aria-label': 'One more ' + info.short.toLowerCase(), onclick: step(1) }, '+')));
+      };
+      return {
+        emoji: '🧺', colors: ['#d7f3e5', '#ffe2cf'], title: 'How many habits?',
+        lead: 'Hello ' + (d.username || 'there') + '! Choose from 0 to 5 of each kind, at least one in total. Start small: two or three habits you really keep beat ten you forget.',
+        body: h('div', null, h('div', { class: 'card', style: { 'margin-top': '0' } }, counter('good'), counter('bad')), total),
+        next: 'Next',
+        valid: function () {
+          const t = self.count('good') + self.count('bad');
+          total.textContent = t ? 'Total: ' + plural(t, 'habit') + ' to track each day.' : 'Choose at least one habit.';
+          total.className = 'plan-total' + (t ? '' : ' err');
+          return t >= HG.CONFIG.MIN_HABITS;
+        },
+        action: async function () { self.buildSteps(); }
+      };
+    }
     stepHabit(kind, k) {
       const self = this, x = this.data[kind][k], good = kind === 'good';
       const errs = {};
@@ -438,7 +502,7 @@
       drawFreq();
 
       const used = {}, self2 = this;
-      ['good', 'bad'].forEach(function (kk) { self2.data[kk].forEach(function (o) { used[o.sentence.toLowerCase()] = true; }); });
+      ['good', 'bad'].forEach(function (kk) { self2.data[kk].slice(0, self2.count(kk)).forEach(function (o) { used[o.sentence.toLowerCase()] = true; }); });
       const sugg = HG.SUGGESTIONS[kind].filter(function (s) { return !used[s.sentence.toLowerCase()]; }).slice(0, 7);
       const chips = h('div', { class: 'chips' }, sugg.map(function (s) {
         return h('button', { class: 'chip', type: 'button', onclick: function () {
@@ -450,11 +514,11 @@
 
       return {
         emoji: good ? '🌱' : '🍂', colors: good ? ['#bfe9d6', '#cfe8ff'] : ['#ffd9c2', '#f8c6e0'],
-        title: (good ? 'Good habit ' : 'Bad habit ') + (k + 1) + ' of 5',
-        lead: good ? 'Something you want to pick up. Keep it concrete and kind.' : 'Something you want to give up. Say what "respected" looks like.',
+        title: HG.KIND_INFO[kind].one + ' · ' + (k + 1) + ' of ' + this.count(kind),
+        lead: good ? 'Something you want to gain: a habit to start. Keep it concrete and kind.' : 'Something you want to lose: a habit to stop. Say what "respected" looks like.',
         body: h('div', null,
           h('div', { class: 'tiny', style: { 'margin-left': '4px' } }, 'Ideas'), chips,
-          h('label', { class: 'field' }, h('span', null, good ? 'Your habit in one sentence' : 'The habit to give up', count), sentence), fieldHint('sentence'),
+          h('label', { class: 'field' }, h('span', null, good ? 'The habit to gain' : 'The habit to lose', count), sentence), fieldHint('sentence'),
           h('label', { class: 'field' }, h('span', null, good ? 'Success looks like' : 'Respected means'), metric), fieldHint('metric'),
           h('div', { class: 'switch-row' }, h('div', { class: 'grow' }, h('b', null, 'Add a frequency'), h('div', { class: 'tiny' }, 'Optional. Without it, the habit is daily.')), sw),
           freqBox, fieldHint('frequency')),
@@ -474,20 +538,24 @@
     stepReview() {
       const self = this, list = h('div', { class: 'review-list' });
       let idx = this.steps.findIndex(function (s) { return s.id === 'habit'; });
+      const planIndex = this.steps.findIndex(function (s) { return s.id === 'plan'; });
       ['good', 'bad'].forEach(function (kind) {
-        list.append(h('div', { class: 'eyebrow', style: { margin: '18px 0 4px' } }, kind === 'good' ? '🌱 To pick up' : '🍂 To give up'));
-        self.data[kind].forEach(function (x, k) {
-          const stepIndex = idx + (kind === 'bad' ? 5 : 0) + k;
+        if (!self.count(kind)) return;
+        list.append(h('div', { class: 'eyebrow kind-' + kind, style: { margin: '18px 0 4px' } }, HG.KIND_INFO[kind].emoji + ' ' + HG.KIND_INFO[kind].title + ' (' + self.count(kind) + ')'));
+        self.data[kind].slice(0, self.count(kind)).forEach(function (x, k) {
+          const stepIndex = idx + (kind === 'bad' ? self.count('good') : 0) + k;
           const fr = x.freqOn ? (kind === 'good' ? x.times + '× per ' + x.per : 'At most ' + x.times + '× per ' + x.per) : 'Every day';
           list.append(h('div', { class: 'item' }, h('div', { class: 'grow' }, h('b', null, x.sentence || '(empty)'), h('div', { class: 'tiny' }, '🎯 ' + x.metric + ' · ' + fr)),
             h('button', { class: 'edit', 'aria-label': 'Edit', html: ICON.pencil, onclick: function () { self.returnTo = self.i; self.go(stepIndex); } })));
         });
       });
       const lockDate = D.format(D.add(this.app.state.today || D.localToday(), HG.CONFIG.LOCK_DAYS), 'long');
+      const total = this.count('good') + this.count('bad');
       return {
-        emoji: '🔒', colors: ['#e9ddff', '#d7f3e5'], title: 'Your 10 commitments',
+        emoji: '🔒', colors: ['#e9ddff', '#d7f3e5'], title: total === 1 ? 'Your commitment' : 'Your ' + total + ' commitments',
         lead: 'Once locked in, they cannot be changed until ' + lockDate + '. That is what makes them work.',
-        body: h('div', { class: 'card', style: { 'margin-top': '0' } }, list),
+        body: h('div', null, h('div', { class: 'card', style: { 'margin-top': '0' } }, list),
+          h('button', { class: 'btn ghost small', style: { 'margin-top': '10px' }, onclick: function () { self.returnTo = null; self.go(planIndex); } }, 'Change the number of habits')),
         next: this.mode === 'edit' ? 'Save and lock 30 days' : 'Lock in for 30 days',
         valid: function () { return HG.Habit.validateSet(self.habitList()).ok; },
         action: async function () {
@@ -518,7 +586,7 @@
     render() {
       const st = this.steps[this.i], self = this;
       const def = st.id === 'welcome' ? this.stepWelcome() : st.id === 'email' ? this.stepEmail() : st.id === 'code' ? this.stepCode() :
-        st.id === 'username' ? this.stepUsername() : st.id === 'habit' ? this.stepHabit(st.kind, st.k) : st.id === 'review' ? this.stepReview() : this.stepDone();
+        st.id === 'username' ? this.stepUsername() : st.id === 'plan' ? this.stepPlan() : st.id === 'habit' ? this.stepHabit(st.kind, st.k) : st.id === 'review' ? this.stepReview() : this.stepDone();
       this.cur = def;
       clear(this.el);
       this.nextBtn = h('button', { class: 'btn next', disabled: true, onclick: function () { self.onNext(); } }, def.next);
@@ -561,6 +629,7 @@
       } catch (e) {
         this.busy = false;
         this.nextBtn.textContent = label;
+        if (!(e instanceof ApiError)) console.error(e);
         this.errorEl.textContent = e.message || 'Something went wrong.';
         this.validate();
       }
@@ -646,8 +715,9 @@
         this.quote(s), this.checkin(ev, s, today), this.tiles(s),
         h('h2', { class: 'section-title' }, 'Your grid', h('small', null, plural(s.monthGreen, 'green day') + ' in ' + D.format(today, 'month').split(' ')[0])),
         h('div', { class: 'card' },
-          buildCalendar({ today: today, width: (this.inner.clientWidth || 358) - 32 - 36, statusOf: function (d) { return ev.day(d, today).status; }, onTap: function (d) { self.app.openDay(d); } }),
-          legend()),
+          habitTotals(ev.activeHabits(today)),
+          buildCalendar({ today: today, width: (this.inner.clientWidth || 358) - 32 - 36, statusOf: function (d) { return ev.day(d, today).status; }, countOf: function (d) { return ev.day(d, today); }, onTap: function (d) { self.app.openDay(d); } }),
+          legend(ev.activeHabits(today).length)),
         h('h2', { class: 'section-title' }, 'Your habits', h('small', null, me.user.lockedUntil > today ? '🔒 until ' + D.format(me.user.lockedUntil) : 'Unlocked')),
         this.habits(ev, today),
         this.gifts(me));
@@ -680,6 +750,7 @@
           h('div', { class: 'grow' }, h('h3', null, green ? 'Today is a green day 🌿' : 'Today is a red day'),
             h('p', { class: 'sub' }, fmtN(d.kept) + ' of ' + d.total + ' habits kept' + (green ? '. Lovely.' : '. Tomorrow is a fresh square.'))),
           h('button', { class: 'btn ghost small', onclick: function () { app.openForm(0); } }, 'Update')),
+        kindBreakdown(d.byKind),
         yesterday);
     }
     tiles(s) {
@@ -693,16 +764,21 @@
     habits(ev, today) {
       const self = this, me = this.st.me, day = ev.day(today, today);
       const levels = (me.checkins[today] || {});
-      const list = ev.activeHabits(today).filter(function (x) { return x.kind === self.kind; });
-      const seg = h('div', { class: 'seg' }, [['good', '🌱 Pick up'], ['bad', '🍂 Give up']].map(function (o) {
-        return h('button', { 'aria-pressed': String(self.kind === o[0]), onclick: function () { self.kind = o[0]; self.render(); } }, o[1]);
+      const active = ev.activeHabits(today), countOf = function (k) { return active.filter(function (x) { return x.kind === k; }).length; };
+      if (!countOf(this.kind) && countOf(this.kind === 'good' ? 'bad' : 'good')) this.kind = this.kind === 'good' ? 'bad' : 'good';
+      const list = active.filter(function (x) { return x.kind === self.kind; });
+      const seg = h('div', { class: 'seg kinds' }, ['good', 'bad'].map(function (k) {
+        const info = HG.KIND_INFO[k];
+        return h('button', { class: k, 'aria-pressed': String(self.kind === k), disabled: !countOf(k), onclick: function () { self.kind = k; self.render(); } }, info.emoji + ' ' + info.short + ' (' + countOf(k) + ')');
       }));
-      return h('div', { class: 'card' }, seg, h('div', { style: { 'margin-top': '6px' } }, list.map(function (x) {
+      return h('div', { class: 'card' }, seg,
+        h('p', { class: 'tiny', style: { margin: '10px 2px 0' } }, self.kind === 'good' ? 'Good habits to gain: a day counts when you did it.' : 'Bad habits to lose: a day counts when you resisted.'),
+        h('div', { style: { 'margin-top': '6px' } }, list.map(function (x) {
         const lv = levels[x.id];
         const lvPill = lv == null ? null : h('span', { class: 'pill ' + (lv === 2 ? 'green' : lv === 1 ? 'butter' : 'red') }, x.levelLabel(lv) + ' today');
         return h('div', { class: 'habit ' + x.kind }, h('div', { class: 'em', 'aria-hidden': 'true' }, x.kind === 'good' ? '🌱' : '🍂'),
           h('div', { class: 'grow' }, h('div', { class: 't' }, x.sentence),
-            h('div', { class: 'm' }, h('span', { class: 'pill' }, '🎯 ' + x.metric), h('span', { class: 'pill lav' }, x.frequencyLabel()), lvPill)));
+            h('div', { class: 'm' }, h('span', { class: 'pill ' + (x.kind === 'good' ? 'gain' : 'lose') }, HG.KIND_INFO[x.kind].short), h('span', { class: 'pill' }, '🎯 ' + x.metric), h('span', { class: 'pill lav' }, x.frequencyLabel()), lvPill)));
       })));
     }
     gifts(me) {
@@ -1087,13 +1163,14 @@
       const check = function () { const ok = habits.every(function (x) { return levels[x.id] != null; }); send.disabled = !ok; send.className = 'btn block' + (ok ? ' green' : ''); };
       add(s.body, [h('p', { class: 'tiny', style: { margin: '0 0 12px' } }, 'Demo stand-in for your personal Google Form. In the real app this button opens the form in Safari, pre-filled with the day and your private key.'),
         h('div', { class: 'pill lav' }, D.format(date, 'long')),
-        habits.map(function (x) {
+        habits.map(function (x, idx) {
+          const header = idx === 0 || habits[idx - 1].kind !== x.kind ? h('div', { class: 'eyebrow kind-' + x.kind, style: { margin: '20px 0 0' } }, HG.KIND_INFO[x.kind].emoji + ' ' + HG.KIND_INFO[x.kind].title) : null;
           const btns = [2, 1, 0].map(function (lv, i) {
             return h('button', { class: 'chip', 'aria-pressed': 'false', onclick: function () {
               levels[x.id] = lv; btns.forEach(function (b, j) { b.setAttribute('aria-pressed', String(i === j)); }); check();
             } }, HG.FORM_CHOICES[i]);
           });
-          return h('div', { style: { 'margin-top': '16px' } }, h('b', null, (x.kind === 'good' ? '🌱 ' : '🍂 ') + x.sentence), h('div', { class: 'tiny' }, 'Respected means: ' + x.metric), h('div', { class: 'row wrap', style: { 'margin-top': '8px', gap: '6px' } }, btns));
+          return h('div', null, header, h('div', { style: { 'margin-top': '12px' } }, h('b', null, x.sentence), h('div', { class: 'tiny' }, 'Respected means: ' + x.metric), h('div', { class: 'row wrap', style: { 'margin-top': '8px', gap: '6px' } }, btns)));
         }), send]);
       s.open();
     }
@@ -1105,12 +1182,14 @@
       s.body.append(h('span', { class: 'pill ' + words[0] }, words[1]));
       if (d.details) {
         s.body.append(h('div', { style: { margin: '14px 0 4px' } }, h('b', null, fmtN(d.kept) + ' of ' + d.total + ' habits kept'), h('span', { class: 'muted' }, ' (' + pct(d.ratio) + ', green above 67%)')),
-          h('div', { class: 'card', style: { 'margin-top': '10px' } }, d.details.map(function (x) {
-            const lv = x.level;
-            return h('div', { class: 'habit ' + x.habit.kind }, h('div', { class: 'em' }, x.habit.kind === 'good' ? '🌱' : '🍂'),
+          kindBreakdown(d.byKind),
+          h('div', { class: 'card', style: { 'margin-top': '10px' } }, d.details.map(function (x, idx) {
+            const lv = x.level, k = x.habit.kind, sub = d.byKind[k];
+            const header = idx === 0 || d.details[idx - 1].habit.kind !== k ? h('div', { class: 'eyebrow kind-' + k, style: { margin: idx ? '16px 0 2px' : '0 0 2px' } }, HG.KIND_INFO[k].emoji + ' ' + HG.KIND_INFO[k].title + ' · ' + fmtN(sub.kept) + '/' + sub.total) : null;
+            return h('div', null, header, h('div', { class: 'habit ' + k }, h('div', { class: 'em' }, HG.KIND_INFO[k].emoji),
               h('div', { class: 'grow' }, h('div', { class: 't' }, x.habit.sentence),
                 h('div', { class: 'm' }, h('span', { class: 'pill ' + (lv === 2 ? 'green' : lv === 1 ? 'butter' : lv === 0 ? 'red' : '') }, lv == null ? 'No answer' : x.habit.levelLabel(lv)),
-                  h('span', { class: 'pill' }, 'Counts ' + fmtN(x.score)), x.note ? h('span', { class: 'tiny' }, x.note) : null)));
+                  h('span', { class: 'pill' }, 'Counts ' + fmtN(x.score)), x.note ? h('span', { class: 'tiny' }, x.note) : null))));
           })));
       }
       if (offset >= 0 && offset <= HG.CONFIG.EDIT_WINDOW_DAYS && d.status !== 'none') {

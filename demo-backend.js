@@ -220,7 +220,7 @@ class AuthService {
   logout(ctx) { this.app.sessions.remove(ctx.session); return { ok: true }; }
 }
 
-/** Username, the 10 habits, the 30-day lock, preferences. */
+/** Username, the habits (1 to 10), the 30-day lock, preferences. */
 class ProfileService {
   constructor(app) { this.app = app; }
   checkUsername(user, data) {
@@ -555,7 +555,7 @@ class FormSpec {
     const items = [], map = {};
     ['good', 'bad'].forEach(function (kind) {
       habits.filter(function (h) { return h.kind === kind; }).forEach(function (h, i) {
-        const title = (kind === 'good' ? '🌱 ' : '🍂 ') + (i + 1) + '. ' + h.sentence;
+        const title = HG.KIND_INFO[kind].emoji + ' ' + HG.KIND_INFO[kind].short + ' ' + (i + 1) + '. ' + h.sentence;
         items.push({ kind: kind, habitId: h.id, title: title, help: 'Respected means: ' + h.metric + ' · ' + h.frequencyLabel() });
         map[title] = h.id;
       });
@@ -566,7 +566,7 @@ class FormSpec {
       confirmation: 'Logged 🌿 Go back to the app to see your square.',
       dayTitle: 'Which day are you filling in?',
       keyTitle: 'Private key (filled in for you, do not change it)',
-      goodHeader: '🌱 Habits to pick up', badHeader: '🍂 Habits to give up',
+      goodHeader: '🌱 ' + HG.KIND_INFO.good.title, badHeader: '🍂 ' + HG.KIND_INFO.bad.title,
       items: items, map: map
     };
   }
@@ -737,7 +737,7 @@ if (typeof module === 'object' && module.exports) module.exports = { createMemor
  */
 (function () {
   'use strict';
-  const D = HG.DateUtil, KEY = 'hg.demo.store.v1';
+  const D = HG.DateUtil, KEY = 'hg.demo.store.v2';
   const PEOPLE = [
     { name: 'Maya', days: 110, reg: .96, p: .84, quiz: .92, play: .9 },
     { name: 'Theo', days: 95, reg: .85, p: .72, quiz: .74, play: .7 },
@@ -763,7 +763,7 @@ if (typeof module === 'object' && module.exports) module.exports = { createMemor
       const u = app.users.create(p.name.toLowerCase() + '@demo.local', 'udemo' + idx, stamp(today, 6));
       u.username = p.name; u.status = 'active'; u.joinedAt = D.add(today, -p.days); u.hue = HG.hueOf(p.name);
       u.lockedUntil = D.add(u.joinedAt, 30 * Math.ceil(p.days / 30 + 0.01));
-      const good = rng.shuffle(HG.SUGGESTIONS.good).slice(0, 5), bad = rng.shuffle(HG.SUGGESTIONS.bad).slice(0, 5);
+      const good = rng.shuffle(HG.SUGGESTIONS.good).slice(0, rng.int(2, 5)), bad = rng.shuffle(HG.SUGGESTIONS.bad).slice(0, rng.int(1, 4));
       u.habits = good.map(function (h) { return Object.assign({ kind: 'good' }, h); }).concat(bad.map(function (h) { return Object.assign({ kind: 'bad' }, h); }))
         .map(function (h, i) { return new HG.Habit(Object.assign({}, h, { id: 'h' + (i + 1), createdAt: u.joinedAt })); });
       u.form = app.forms.createForUser(u, u.habits);

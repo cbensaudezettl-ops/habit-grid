@@ -434,3 +434,48 @@ textarea.input { resize: none; min-height: 84px; line-height: 1.35; }
   .display { font-size: 40px; }
   .tiles { grid-template-columns: repeat(4, 1fr); }
 }
+
+/* ---------- habit kinds: good habits to gain, bad habits to lose ---------- */
+.pill.gain { background: var(--green-soft); color: var(--green); }
+.pill.lose { background: var(--peach-soft); color: #b4532a; }
+.pill.total { background: var(--lav-soft); color: #6f5ce0; }
+:root[data-theme="dark"] .pill.lose { color: var(--peach); }
+:root[data-theme="dark"] .pill.total { color: #b9adff; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill.lose { color: var(--peach); } :root:not([data-theme="light"]) .pill.total { color: #b9adff; } }
+.eyebrow.kind-good { color: var(--green); }
+.eyebrow.kind-bad { color: #b4532a; }
+:root[data-theme="dark"] .eyebrow.kind-bad { color: var(--peach); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .eyebrow.kind-bad { color: var(--peach); } }
+.habit.good { box-shadow: inset 3px 0 0 var(--green-2); padding-left: 10px; }
+.habit.bad { box-shadow: inset 3px 0 0 var(--peach); padding-left: 10px; }
+.seg.kinds button.good[aria-pressed="true"] { color: var(--green); }
+.seg.kinds button.bad[aria-pressed="true"] { color: #b4532a; }
+.seg.kinds button:disabled { opacity: .4; }
+.totals { display: flex; flex-wrap: wrap; gap: 6px; }
+.breakdown { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-top: 14px; }
+.bd { padding: 10px 12px; border-radius: 14px; background: var(--surface-2); }
+.bd-top { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.bd-top b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.bd .bar { height: 6px; border-radius: 99px; background: var(--line); margin-top: 8px; overflow: hidden; }
+.bd .bar i { display: block; height: 100%; border-radius: 99px; }
+.bd.good .bar i { background: var(--green-2); }
+.bd.bad .bar i { background: var(--peach); }
+
+/* ---------- onboarding: how many habits ---------- */
+.plan-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+.plan-row + .plan-row { border-top: 1px solid var(--line); }
+.plan-row .em { flex: none; width: 40px; height: 40px; border-radius: 13px; display: grid; place-items: center; font-size: 20px; background: var(--green-soft); }
+.plan-row.bad .em { background: var(--peach-soft); }
+.plan-total { margin: 12px 4px 0; font-size: 14px; font-weight: 650; color: var(--ink-2); }
+.plan-total.err { color: #c4473a; }
+
+/* ---------- calendar squares that show the number of habits kept ---------- */
+.day.counts { position: relative; }
+.day.counts .dn { position: absolute; top: 2px; left: 4px; font-size: calc(var(--cell) * .27); line-height: 1; font-weight: 600; opacity: .72; }
+.day.counts .kc { display: block; font-size: calc(var(--cell) * .48); line-height: var(--cell); padding-top: calc(var(--cell) * .14); font-weight: 800; }
+.legend-count { flex-basis: 100%; }
+.legend i.sample { --cell: 30px; position: relative; flex: none; width: 30px; height: 30px; border-radius: 9px; background: var(--green); color: #fff; font-style: normal; text-align: center; }
+.legend i.sample .dn { position: absolute; top: 2px; left: 4px; font-size: 8px; line-height: 1; font-weight: 600; opacity: .8; }
+.legend i.sample .kc { display: block; font-size: 14px; line-height: 30px; padding-top: 4px; font-weight: 800; }
+.bd-top { flex-wrap: wrap; }
+.bd-top span, .bd-top b { white-space: nowrap; }
