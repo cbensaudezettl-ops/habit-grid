@@ -1,0 +1,16 @@
+{
+  "name": "Habit Grid",
+  "short_name": "Habit Grid",
+  "description": "Pick up good habits, give up bad ones, grow your grid with friends.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fbf6ef",
+  "theme_color": "#fbf6ef",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
