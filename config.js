@@ -4,5 +4,5 @@
  * Leave it empty to run the demo with made-up players.
  */
 window.HG_CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwpR_SQjUz_-x97fs75PYawLUClRobCXig3KWstYhIw1i81tne7k2s6sgB7ZU_Y1DxG1A/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbwR790NHKsd2uui42dEF-3ef3b6uwLF9SWRJRL0wd_ItNPzzcaQztnrkrNjpywdXIHBpw/exec'
 };
